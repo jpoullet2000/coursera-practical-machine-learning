@@ -1,0 +1,128 @@
+---
+title: 'Practical Machine Learning Course Assignment'
+author: "Jean-Baptiste Poullet"
+date: "January 21, 2015"
+output: html_document
+---
+
+## <a name="introduction"></a> Introduction
+
+The goal of this document is to build a model able to predict how well a person performs barbell lifts. Obviously time series data analysis could have been interesting to predict if a cycle is performed correctly. In our case, we are focussing on time instants: does the person perform barbell lifts correctly at time t. The data are described in Section [Material](#material). We explain how we build our models in Section [Methods and Results](#methodsResults). The last section is just meant to generate the prediction files (see Section [Prediction files](#predictionFiles)). Both built models show high accuracies on the training set and agree on the predictions on the test set.
+
+## <a name="material"></a> Material 
+
+The input data are available from the coursera website:
+
+- [Training Data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+- [Testing Data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+The goal is to predict between 5 activities: 
+
+- exactly according to the specification (Class A), 
+- throwing the elbows to the front (Class B), 
+- lifting the dumbbell only halfway (Class C), 
+- lowering the dumbbell only halfway (Class D) and 
+- throwing the hips to the front (Class E)
+
+More information about the data and the original study can be found from [here](http://groupware.les.inf.puc-rio.br/har).
+
+## <a name="methodsResults"></a> Methods and results 
+
+For replication purposes, we set the seed. 
+
+```{r echo=TRUE, message=FALSE}
+library(caret)
+library(knitr)
+library(kernlab) 
+library(doMC)
+registerDoMC(cores = 8)
+
+set.seed(100)
+
+# Reading data
+dat.train <- read.csv("pml-training.csv", stringsAsFactors=FALSE)
+dat.test <- read.csv("pml-testing.csv", stringsAsFactors=FALSE)
+```
+
+We first clean up the data from unusable fields (empty, NAs, unique value fields, near zero fields).
+Several variables are not pertinent in our classification model such as the ones related to times measures have been taken. These variables have been discarded. Note that if we had considered a cycle instead of a time point we would have considered some of those variables. The remaining 52 predictors and the classe variables do not show any missing value, and so no imputation is required.  
+
+```{r}
+
+#' cleaningUp Cleaning up data
+#' Empty fields are removed from the data frame as well as unique value fields and near zero fields
+getIndecesOfFieldsToKeep <- function(df){
+  nzv <- nearZeroVar(df,saveMetrics = TRUE)
+  idx.NA <- sapply(df, function(x) any(is.na(x)))
+  idx.empty <- sapply(df, function(x) any(x==""))
+  idx.to.keep <- !(nzv$nzv | idx.NA | idx.empty | nzv$percentUnique == 100)
+}
+idx.keep = getIndecesOfFieldsToKeep(dat.train)
+# Not pertinent columns are also removed from the data frame
+notPertinentColumns <- c("user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+              "cvtd_timestamp","num_window")
+idx.remove <- names(dat.train) %in% notPertinentColumns
+idx.keep.last <- idx.keep & !idx.remove
+dat.train.cleaned <- dat.train[,idx.keep.last]
+dat.train.cleaned$classe <- as.factor(dat.train.cleaned$classe)
+# same cleaning or data processing must be done on the test set
+dat.test.cleaned <- dat.test[,idx.keep.last]
+```
+
+Exploring the data might take a while (human resources), so our strategy is to first use the computing power to test how our models behave. Then, we will see whether data exploration is needed. Indeed, in our problem, the classifier can be considered as a black box: we do not need to interpret the model in terms of its predictors. The volume of data is quite small and therefore there is no need per se for feature reduction (we will see later if the model is not stable and if some features just bring some noise to the useful signal). We have chosen prediction models that do not require specific distributions of the data, such that the cleaned input data are convenient for building our model. Two of the most successful classifier algorithms have been selected: Boosting (gbm), Random Forest (rf). For parameter tuning, 4-fold cross-validation have been chosen: we hope to have a good trade-off between bias and variance. Let's see if the model is stable as such before possibly trying data exploration, feature reduction or repeated cross-validation.  
+
+
+```{r, echo=TRUE, message=FALSE, cache=TRUE}
+  # 4-fold Cross Validation on the training data
+  ctrl <- trainControl(method = "cv", number = 4, allowParallel = TRUE)
+  # 2 successful classifier algorithms have been tested to build our models 
+  m1 <- train(classe ~ ., data = dat.train.cleaned, method = "gbm", trControl = ctrl)
+  m2 <- train(classe ~ ., data = dat.train.cleaned, method = "rf", trControl = ctrl)
+```
+
+Let's compute the accuracy of our best cross-validation model.
+
+```{r, echo=TRUE}
+  # Maximum accuracy for each model 
+  acc.df <- data.frame(model=c("Boosting (gbm)", "Random Forest (rf)"),
+                       maxCVAcc=c(round(max(m1$results$Accuracy), 3),
+                                   round(max(m2$results$Accuracy), 3)
+                                   ))
+ kable(acc.df)
+```
+
+Models show very high accuracies (all higher than 95%). We need to validate our models on an independant data set, the test set.  
+
+```{r, echo=TRUE, message=FALSE}
+  # Prediction on the test set
+  test.pred.1 <- predict(m1, dat.test.cleaned)
+  test.pred.2 <- predict(m2, dat.test.cleaned)
+
+  # Prediction table and let's see if the predictions match for both models 
+  pred.df <- data.frame(gbm.prediction = test.pred.1, randomForest.prediction = test.pred.2, agree = (test.pred.1 == test.pred.2)) 
+  kable(pred.df)  
+```
+
+Classes for the test set are not available but both models show identical predictions on the test set. So we conclude that the built models are stable enough and no further processing (like feature reduction or parameter tuning) or model building is needed.
+Since both models agree, we propose as final model the random forest model which showed a 99% accuracy on the training data set. 
+
+## <a name="predictionFiles"></a> Prediction files 
+
+The prediction files have been generated with the code below (taken from [here](https://class.coursera.org/predmachlearn-010/assignment/view?assignment_id=5)).
+
+```{r, echo=TRUE}
+  # Looks like they all do; let's write out the prediction files to submit
+  # This uses the code supplied by the class instructions
+  answers <- pred.df$randomForest.pred
+
+  pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+      filename = paste0("problem_id_",i,".txt")
+      write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+  }
+  
+  pml_write_files(answers)
+```
+
